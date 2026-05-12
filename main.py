@@ -239,15 +239,41 @@ async def get_all_stocks(page: int = 1, limit: int = 50):
 async def get_history(symbol: str, period: str = "1y", interval: str = "1d"):
     ticker = symbol if ("." in symbol or symbol.startswith("^")) else f"{symbol}.NS"
     try:
-        df = yf.download(ticker, period=period, interval=interval, progress=False)
+        t = yf.Ticker(ticker)
+        df = t.history(period=period, interval=interval, auto_adjust=False)
+
+        if df is None or df.empty:
+            raise HTTPException(status_code=404, detail=f"No data for {ticker}")
+
+        df = df.reset_index()
+
+        # yfinance names the time column "Date" for daily, "Datetime" for intraday.
+        # Find whichever one exists and normalize to "Date".
+        date_col = None
+        for candidate in ("Date", "Datetime", "index"):
+            if candidate in df.columns:
+                date_col = candidate
+                break
+        if date_col is None:
+            date_col = df.columns[0]  # fall back to first column
+
+        # Format as ISO string; works for both date and datetime dtypes
+        df[date_col] = df[date_col].apply(
+            lambda x: x.strftime("%Y-%m-%dT%H:%M:%SZ") if hasattr(x, "strftime") else str(x)
+        )
+        if date_col != "Date":
+            df = df.rename(columns={date_col: "Date"})
+
+        # Drop rows with NaN closes so the client never gets bad JSON
+        df = df.dropna(subset=["Close"])
+
+        return df.to_dict(orient="records")
+
+    except HTTPException:
+        raise
     except Exception as e:
         log.exception(f"history fetch failed for {ticker}")
-        raise HTTPException(status_code=502, detail=f"upstream error: {e}")
-    if df.empty:
-        raise HTTPException(status_code=404, detail="Stock not found")
-    df.reset_index(inplace=True)
-    df["Date"] = df["Date"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    return df.to_dict(orient="records")
+        raise HTTPException(status_code=502, detail=f"upstream error: {type(e).__name__}: {e}")
 
 
 @app.get("/stocks/{symbol}/fundamentals")
@@ -258,7 +284,8 @@ async def get_fundamentals(symbol: str):
         info = stock.info or {}
     except Exception as e:
         log.exception(f"fundamentals fetch failed for {ticker}")
-        raise HTTPException(status_code=502, detail=f"upstream error: {e}")
+        raise HTTPException(status_code=502, detail=f"upstream error: {type(e).__name__}: {e}")
+
     return {
         "symbol": symbol,
         "name": info.get("longName"),
