@@ -61,18 +61,55 @@ app.add_middleware(
 def fetch_single_ticker(ticker: str):
     """
     Fetch one ticker's recent data. Returns a dict or None.
-    Uses yf.Ticker().history() instead of yf.download() — slower but
-    far more reliable against Yahoo Finance rate-limiting.
+    Drops NaN rows so holidays/halts don't pollute the snapshot.
     """
+    import math
     try:
         t = yf.Ticker(ticker)
-        df = t.history(period="5d", interval="1d", auto_adjust=False)
+        df = t.history(period="10d", interval="1d", auto_adjust=False)
         if df is None or df.empty:
             log.warning(f"  {ticker}: empty dataframe")
             return None
-        if len(df) < 2:
-            log.warning(f"  {ticker}: only {len(df)} row(s) — need 2 for change calc")
+
+        # Drop rows where Close is NaN — holidays, halts, missing data
+        close_series = df["Close"].dropna()
+        if len(close_series) < 2:
+            log.warning(f"  {ticker}: only {len(close_series)} valid close(s) — need 2")
             return None
+
+        ltp = float(close_series.iloc[-1])
+        base_price = float(close_series.iloc[-2])
+
+        # Belt-and-suspenders: reject anything that's still not a real number
+        if math.isnan(ltp) or math.isnan(base_price) or math.isinf(ltp) or math.isinf(base_price):
+            log.warning(f"  {ticker}: non-finite price after dropna (ltp={ltp}, base={base_price})")
+            return None
+        if base_price == 0:
+            log.warning(f"  {ticker}: base price is zero, can't compute change")
+            return None
+
+        change = ((ltp - base_price) / base_price) * 100
+
+        # Volume can also be NaN
+        volume = 0
+        if "Volume" in df.columns:
+            vol_series = df["Volume"].dropna()
+            if len(vol_series) > 0:
+                v = vol_series.iloc[-1]
+                if not math.isnan(v):
+                    volume = int(v)
+
+        return {
+            "symbol": ticker.replace(".NS", ""),
+            "ltp": round(ltp, 2),
+            "basePrice": round(base_price, 2),
+            "change": round(change, 2),
+            "volume": volume,
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        log.warning(f"  {ticker}: {type(e).__name__}: {e}")
+        return None
 
         ltp = float(df["Close"].iloc[-1])
         base_price = float(df["Close"].iloc[-2])
