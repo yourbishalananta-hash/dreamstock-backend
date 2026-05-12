@@ -237,7 +237,7 @@ async def get_all_stocks(page: int = 1, limit: int = 50):
 
 @app.get("/stocks/{symbol}/history")
 async def get_history(symbol: str, period: str = "1y", interval: str = "1d"):
-    ticker = symbol if "." in symbol else f"{symbol}.NS"
+    ticker = symbol if ("." in symbol or symbol.startswith("^")) else f"{symbol}.NS"
     try:
         df = yf.download(ticker, period=period, interval=interval, progress=False)
     except Exception as e:
@@ -252,7 +252,7 @@ async def get_history(symbol: str, period: str = "1y", interval: str = "1d"):
 
 @app.get("/stocks/{symbol}/fundamentals")
 async def get_fundamentals(symbol: str):
-    ticker = symbol if "." in symbol else f"{symbol}.NS"
+    ticker = symbol if ("." in symbol or symbol.startswith("^")) else f"{symbol}.NS"
     try:
         stock = yf.Ticker(ticker)
         info = stock.info or {}
